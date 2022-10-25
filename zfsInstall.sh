@@ -4,7 +4,7 @@
 # Disk Variables
 ##
 
-DISK=()
+diskDev=()
 vdev_type=mirror
 INST_PARTSIZE_SWAP=8
 INST_PARTSIZE_RPOOL=
@@ -204,18 +204,10 @@ function setup_system() {
     systemctl enable firewalld --root=/mnt
 }
 
-function chroot_setup() {
-    m='/dev /proc /sys'
-    for i in $m; do mount --rbind $i /mnt/$i; done
-
-    history -w /mnt/home/sys-install-pre-chroot.txt
-    chroot /mnt /usr/bin/env DISK="$DISK" bash --login
-}
-
 function chroot_commands() {
-    fixfiles -F onboot
+    echo -e 'fixfiles -F onboot
 
-    adduser $user -p $password
+    adduser $user -p $c
 
     usermod -a -G wheel $user
 
@@ -265,7 +257,20 @@ function chroot_commands() {
     done
     rm -rf $ESP_MIRROR
 
-    exit
+    exit' > /mnt/root/chroot.sh
+}
+
+function chroot_setup() {
+    m='/dev /proc /sys'
+    for i in $m; do mount --rbind $i /mnt/$i; done
+
+    chroot_commands
+
+    history -w /mnt/home/sys-install-pre-chroot.txt
+    chroot /mnt /usr/bin/env \
+        user=$user \
+        password=$password \
+        bash --login /root/chroot.sh
 }
 
 function cleanup() {
@@ -274,7 +279,7 @@ function cleanup() {
     
     echo "Fedora ZFS has been installed, please reboot"
 
-    exit 0
+    exit
 }
 
 ##
@@ -354,6 +359,18 @@ function change_tz() {
     return
 }
 
+function devToId() {
+    for i in ${diskDev}; do
+        diskLine="$(ls -l /dev/disk/by-id/ | grep -v nvme-nvme | grep -m 1 $i)"
+
+        readarray -d " " -t strarr <<< "$diskLine"
+
+        DISK+="/dev/disk/by-id/${strarr[8]}"
+    done
+
+    echo $DISK
+}
+
 ##
 # Menu Functions
 ##
@@ -380,13 +397,13 @@ function choose_disks() {
         fi
     done
     echo -e "$(ColorGreen '0)') Return"
-    echo -e "Selected Disks: $DISK"
+    echo -e "Selected Disks: $diskDev"
     echo -ne "$(ColorBlue 'Choose Disk(s): ')"
         read a
         if [ "$a" == "0" ]; then
             return
         else
-            DISK+="/dev/${disk[$((a - 1))]} "
+            diskDev+="${disk[$((a - 1))]} "
             choose_disks
         fi
 }
@@ -477,13 +494,11 @@ function system_settings() {
 }
 
 function install_fedora() {
-    if [ ${echo $DISK | grep -o dev | wc -l} == 1 ]; then
+    devToId
+
+    if [ $(echo $diskDev | grep -o dev | wc -l) == 1 ]; then
         vdev_type=""
     fi
-
-    echo "Not Implimented Yet"
-    sleep 5
-    return
 
     echo "Seting up live system for ZFS"
     setup_live
@@ -517,16 +532,19 @@ function install_fedora() {
         install_packages
     fi
 
+    echo "Generating fstab"
     generate_fstab
 
+    echo "Configuring Dracut"
     configure_dracut
 
+    echo "Setting up system"
     setup_system
 
+    echo "Setting up chroot and running chroot commands"
     chroot_setup
 
-    chroot_commands
-
+    echo "Cleaning up"
     cleanup
 }
 
